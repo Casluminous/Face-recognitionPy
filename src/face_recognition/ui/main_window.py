@@ -4,6 +4,7 @@ Light (white) theme, live face catalog table on top, status bar at bottom.
 """
 from __future__ import annotations
 
+import csv
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +51,19 @@ QStatusBar::item { border: none; }
 """
 
 CATALOG_COLUMNS = ("ID", "Gender", "Confidence", "Engine", "Position")
+CSV_HEADER = ("timestamp", "track_id", "gender", "confidence", "engine", "x", "y", "w", "h")
+
+
+def write_faces_csv(path: str | Path, rows: list[FaceRow], engine: str, timestamp: str) -> int:
+    """Write catalog rows to CSV. Returns number of data rows written."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(CSV_HEADER)
+        for r in rows:
+            gender = f"{r.gender_label} {r.gender_pct}".strip()
+            w.writerow([timestamp, r.track_id, gender, f"{r.confidence:.4f}",
+                        engine, r.x, r.y, r.w, r.h])
+    return len(rows)
 
 
 def _to_pixmap(frame: np.ndarray, max_w: int = 640) -> QPixmap:
@@ -114,6 +128,8 @@ class MainWindow(QMainWindow):
         self.camera_on = False
         self._catalog_key: tuple = ()
         self._last_processed: np.ndarray | None = None
+        self._last_rows: list[FaceRow] = []
+        self._last_engine: str = "--"
 
         # ---- widgets ----
         central = QWidget()
@@ -140,10 +156,12 @@ class MainWindow(QMainWindow):
         self.btn_camera.setObjectName("primary")
         self.btn_snapshot = QPushButton("Snapshot")
         self.btn_snapshot.setEnabled(False)
+        self.btn_export = QPushButton("Export CSV")
         self.camera_selector = QComboBox()
         top.addWidget(self.btn_image)
         top.addWidget(self.btn_camera)
         top.addWidget(self.btn_snapshot)
+        top.addWidget(self.btn_export)
         top.addWidget(self.camera_selector)
         top.addStretch(1)
         layout.addLayout(top)
@@ -185,6 +203,7 @@ class MainWindow(QMainWindow):
         self.btn_image.clicked.connect(self.select_image)
         self.btn_camera.clicked.connect(self.toggle_camera)
         self.btn_snapshot.clicked.connect(self.take_snapshot)
+        self.btn_export.clicked.connect(self.export_catalog)
         self.chk_adaptive.toggled.connect(self._on_adaptive)
         self.chk_bright.toggled.connect(self._on_bright)
         self.chk_gender.toggled.connect(lambda v: self.prefs.set_bool("gender_recognition_enabled", v))
@@ -229,6 +248,8 @@ class MainWindow(QMainWindow):
         self.source_view.setPixmap(_to_pixmap(display))
         self.result_view.setPixmap(_to_pixmap(processed))
         self._last_processed = processed
+        self._last_rows = list(rows)
+        self._last_engine = engine
         self.btn_snapshot.setEnabled(True)
         self._refresh_catalog(rows, engine)
         self.status_bar.showMessage(status)
@@ -252,6 +273,25 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Snapshot saved: {path}")
         else:
             self.status_bar.showMessage(f"Failed to save snapshot: {path}")
+
+    def export_catalog(self):
+        if not self._last_rows:
+            self.status_bar.showMessage("Catalog is empty — nothing to export")
+            return
+        start_dir = self.prefs.get_string("last_csv_dir", str(Path.home() / "Documents"))
+        stamp = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
+        name = sanitize_filename(f"faces_{stamp}.csv")
+        path, _ = QFileDialog.getSaveFileName(self, "Export catalog", str(Path(start_dir) / name),
+                                              "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            ts = datetime.now(UTC).astimezone().isoformat(timespec="seconds")
+            n = write_faces_csv(path, self._last_rows, self._last_engine, ts)
+            self.prefs.set_string("last_csv_dir", str(Path(path).parent))
+            self.status_bar.showMessage(f"Exported {n} row(s): {path}")
+        except OSError as e:
+            self.status_bar.showMessage(f"Failed to export CSV: {e}")
 
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select image", "",

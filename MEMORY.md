@@ -27,3 +27,7 @@
 ## 2026-10-01 — Nút Snapshot
 - Đã làm: `ui/main_window.py` thêm nút Snapshot (disable đến khi có kết quả đầu tiên), lưu ảnh processed qua save-dialog, tên mặc định `snapshot_YYYYMMDD_HHMMSS.jpg`, nhớ thư mục qua prefs `last_snapshot_dir`, lỗi báo statusbar.
 - Verify: `pytest 6 passed`; lint không thêm warning mới; test offscreen bấm snapshot ghi file JPG thật OK.
+
+## 2026-10-01 — Nút Export CSV
+- Đã làm: `ui/main_window.py` thêm nút Export CSV + helper `write_faces_csv()` (header timestamp,track_id,gender,confidence,engine,x,y,w,h), nhớ thư mục qua prefs `last_csv_dir`, catalog rỗng thì báo statusbar thay vì tạo file rỗng; thêm `tests/test_export.py` (2 test).
+- Verify: `pytest 8 passed`; lint không thêm warning mới; test offscreen export CSV thật đúng nội dung.
