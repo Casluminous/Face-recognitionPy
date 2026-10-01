@@ -16,3 +16,10 @@
 ## 2026-10-01 — Fix exe crash ImportError
 - Lỗi: `FaceRecognition.exe` báo `ImportError: attempted relative import` vì `__main__.py` dùng `from .ui...` — PyInstaller chạy entry như top-level script.
 - Fix: chuyển sang absolute `from face_recognition.ui.main_window import run_app`; rebuild cả 2 exe, bản debug hết traceback, GUI sống >25s, chỉ còn log camera probe vô hại của OpenCV.
+
+## 2026-10-01 — Push lên GitHub
+- Tạo repo private `Casluminous/Face-recognitionPy`, commit root `feat: port Java face recognition...` (34 files), push branch master. `.gitignore` loại build/dist/exe (exe 152MB vượt giới hạn 100MB của GitHub).
+
+## 2026-10-01 — White theme + bảng catalog trên cùng
+- Đã làm: `frames.py` thêm `FaceRow` + `FrameResult.faces` để fill bảng; viết lại `ui/main_window.py` — QSS trắng (#F8FAFC/#1E293B, nút chính xanh #16A34A), `QTableWidget` catalog 5 cột (ID/Gender/Confidence/Engine/Position) nằm trên cùng update live, status dồn vào `QStatusBar`.
+- Verify: `pytest 6 passed`; lint chỉ còn warning style cũ; render offscreen + screenshot đúng layout (chữ hiện ô vuông do offscreen thiếu font, máy thật OK).

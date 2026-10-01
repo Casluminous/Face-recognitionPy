@@ -1,7 +1,7 @@
 """FrameProcessor — port of Java FrameProcessor."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -14,12 +14,30 @@ from ..services.pipeline import DetectionPipeline
 
 
 @dataclass
+class FaceRow:
+    """One row for the catalog table: identity + prediction of a tracked face."""
+    track_id: int = 0
+    x: int = 0
+    y: int = 0
+    w: int = 0
+    h: int = 0
+    gender_label: str = ""
+    gender_pct: str = ""
+    confidence: float = 0.0
+
+    @property
+    def position(self) -> str:
+        return f"({self.x},{self.y}) {self.w}x{self.h}"
+
+
+@dataclass
 class FrameResult:
     display: np.ndarray
     processed: np.ndarray
     status: str
     engine_label: str
     bright_scene: bool
+    faces: list[FaceRow] = field(default_factory=list)
 
 
 class FrameProcessor:
@@ -66,10 +84,12 @@ class FrameProcessor:
         det = self.pipeline.process(display, analysis, cur, bright_scene)
         out = display.copy()
         active: set[int] = set()
+        rows: list[FaceRow] = []
         for face in det.faces:
             active.add(face.track_id)
             x, y, w, h = face.x, face.y, face.w, face.h
             cv2.rectangle(out, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            label, pct = "", ""
             if gender_on and self.face_service is not None and self.face_service.gender_available:
                 if self._should_predict(face.track_id, cur):
                     res = self.face_service.predict_gender(analysis, (x, y, w, h), face.landmarks)
@@ -78,11 +98,13 @@ class FrameProcessor:
             if gender_on:
                 info = self.cache.get(face.track_id)
                 if info is not None:
-                    cv2.putText(out, f"{info[0]} {info[1]}", (x, max(0, y - 10)),
+                    label, pct = info[0], info[1]
+                    cv2.putText(out, f"{label} {pct}", (x, max(0, y - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            rows.append(FaceRow(face.track_id, x, y, w, h, label, pct, face.confidence))
         self.cache.retain_all(active)
         for tid in list(self._last_gender.keys()):
             if tid not in active:
                 del self._last_gender[tid]
         status = f"{len(det.faces)} face(s) detected"
-        return FrameResult(display, out, status, det.engine_label, bright_scene)
+        return FrameResult(display, out, status, det.engine_label, bright_scene, rows)

@@ -1,4 +1,7 @@
-"""Desktop UI — PySide6 port of ViewController + UIManager + MainApp."""
+"""Desktop UI — PySide6 port of ViewController + UIManager + MainApp.
+
+Light (white) theme, live face catalog table on top, status bar at bottom.
+"""
 from __future__ import annotations
 
 import sys
@@ -8,19 +11,42 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-                               QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QMainWindow, QPushButton, QStatusBar,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..config import AppConfig
 from ..detectors.ssd_haar import HaarFaceDetector, SsdFaceDetector
 from ..detectors.yolo import YoloFaceDetector
 from ..model_paths import ModelPaths
-from ..processing.frames import FrameProcessor
+from ..processing.frames import FaceRow, FrameProcessor
 from ..processing.vision_fps import FpsCalculator
 from ..services.camera import CameraManager
 from ..services.face_service import FaceDetectorService
 from ..services.pipeline import DetectionPipeline
 from ..services.prefs import PreferencesService
 from ..services.update_security import UpdateService
+
+LIGHT_QSS = """
+QMainWindow, QWidget { background: #F8FAFC; color: #1E293B; font-size: 13px; }
+QPushButton { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px;
+    padding: 7px 16px; color: #1E293B; }
+QPushButton:hover { background: #F1F5F9; border-color: #94A3B8; }
+QPushButton:pressed { background: #E2E8F0; }
+QPushButton#primary { background: #16A34A; color: #FFFFFF; border: none; font-weight: 600; }
+QPushButton#primary:hover { background: #15803D; }
+QComboBox { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px; padding: 5px 10px; }
+QTableWidget { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px;
+    gridline-color: #E2E8F0; alternate-background-color: #F8FAFC; }
+QHeaderView::section { background: #F1F5F9; color: #475569; border: none;
+    padding: 5px; font-weight: 600; }
+QLabel { color: #1E293B; }
+QLabel#videoView { background: #111111; color: #DDDDDD; border-radius: 6px; }
+QCheckBox { color: #334155; spacing: 6px; }
+QStatusBar { background: #FFFFFF; border-top: 1px solid #E2E8F0; color: #475569; }
+QStatusBar::item { border: none; }
+"""
+
+CATALOG_COLUMNS = ("ID", "Gender", "Confidence", "Engine", "Position")
 
 
 def _to_pixmap(frame: np.ndarray, max_w: int = 640) -> QPixmap:
@@ -83,27 +109,45 @@ class MainWindow(QMainWindow):
         self.worker: CameraWorker | None = None
         self.frame_counter = 0
         self.camera_on = False
+        self._catalog_key: tuple = ()
 
         # ---- widgets ----
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # catalog table on top
+        self.catalog = QTableWidget(0, len(CATALOG_COLUMNS))
+        self.catalog.setHorizontalHeaderLabels(list(CATALOG_COLUMNS))
+        self.catalog.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.catalog.setSelectionBehavior(QTableWidget.SelectRows)
+        self.catalog.setSelectionMode(QTableWidget.SingleSelection)
+        self.catalog.setAlternatingRowColors(True)
+        self.catalog.verticalHeader().setVisible(False)
+        self.catalog.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.catalog.setFixedHeight(140)
+        layout.addWidget(self.catalog)
+
         top = QHBoxLayout()
         self.btn_image = QPushButton("Open Image")
         self.btn_camera = QPushButton("Start Camera")
+        self.btn_camera.setObjectName("primary")
         self.camera_selector = QComboBox()
         top.addWidget(self.btn_image)
         top.addWidget(self.btn_camera)
         top.addWidget(self.camera_selector)
+        top.addStretch(1)
         layout.addLayout(top)
 
         views = QHBoxLayout()
         self.source_view = QLabel("Source")
         self.result_view = QLabel("Result")
         for v in (self.source_view, self.result_view):
+            v.setObjectName("videoView")
             v.setAlignment(Qt.AlignCenter)
             v.setMinimumSize(480, 360)
-            v.setStyleSheet("background:#222; color:#ddd;")
         views.addWidget(self.source_view)
         views.addWidget(self.result_view)
         layout.addLayout(views)
@@ -117,14 +161,18 @@ class MainWindow(QMainWindow):
         self.chk_gender.setChecked(self.prefs.get_bool("gender_recognition_enabled", False))
         for c in (self.chk_adaptive, self.chk_bright, self.chk_gender):
             opts.addWidget(c)
+        opts.addStretch(1)
         layout.addLayout(opts)
 
-        self.status_label = QLabel("Idle")
+        # status bar replaces the 4 stacked labels
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
         self.engine_label = QLabel("Engine: --")
         self.fps_label = QLabel("FPS: --")
         self.exposure_label = QLabel("Exposure: Ready")
-        for l in (self.status_label, self.engine_label, self.fps_label, self.exposure_label):
-            layout.addWidget(l)
+        for w in (self.engine_label, self.fps_label, self.exposure_label):
+            self.status_bar.addPermanentWidget(w)
+        self.status_bar.showMessage("Idle")
 
         # ---- signals ----
         self.btn_image.clicked.connect(self.select_image)
@@ -153,6 +201,31 @@ class MainWindow(QMainWindow):
         data = self.camera_selector.currentData()
         return int(data) if data is not None else 0
 
+    def _refresh_catalog(self, rows: list[FaceRow], engine: str) -> None:
+        key = tuple((r.track_id, r.gender_label, r.gender_pct,
+                     round(r.confidence, 3), r.x, r.y, r.w, r.h) for r in rows) + (engine,)
+        if key == self._catalog_key:
+            return
+        self._catalog_key = key
+        self.catalog.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            gender = f"{r.gender_label} {r.gender_pct}".strip() or "--"
+            vals = (str(r.track_id), gender, f"{r.confidence:.0%}", engine, r.position)
+            for j, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.catalog.setItem(i, j, item)
+
+    def _show_result(self, display, processed, status: str, engine: str,
+                     rows: list[FaceRow], fps_text: str, exposure: str) -> None:
+        self.source_view.setPixmap(_to_pixmap(display))
+        self.result_view.setPixmap(_to_pixmap(processed))
+        self._refresh_catalog(rows, engine)
+        self.status_bar.showMessage(status)
+        self.engine_label.setText(f"Engine: {engine}")
+        self.fps_label.setText(f"FPS: {fps_text}")
+        self.exposure_label.setText(exposure)
+
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select image", "",
                                               "Images (*.png *.jpg *.jpeg *.bmp *.webp)")
@@ -162,16 +235,12 @@ class MainWindow(QMainWindow):
             self.toggle_camera()
         img = cv2.imread(path)
         if img is None:
-            self.status_label.setText("Failed to read image")
+            self.status_bar.showMessage("Failed to read image")
             return
         self.processor.reset()
         res = self.processor.process(img, 1, self.chk_bright.isChecked(), self.chk_gender.isChecked())
-        self.source_view.setPixmap(_to_pixmap(res.display))
-        self.result_view.setPixmap(_to_pixmap(res.processed))
-        self.status_label.setText(res.status)
-        self.engine_label.setText(f"Engine: {res.engine_label}")
-        self.fps_label.setText("FPS: Static")
-        self.exposure_label.setText("Exposure: N/A")
+        self._show_result(res.display, res.processed, res.status, res.engine_label,
+                          res.faces, "Static", "Exposure: N/A")
 
     def toggle_camera(self):
         if self.camera_on:
@@ -183,7 +252,7 @@ class MainWindow(QMainWindow):
             self.btn_camera.setText("Start Camera")
             return
         if not self.camera.open(self._selected_camera()):
-            self.status_label.setText("Failed to open camera")
+            self.status_bar.showMessage("Failed to open camera")
             return
         self.prefs.set_int("last_camera_index", self._selected_camera())
         self.processor.reset()
@@ -200,12 +269,8 @@ class MainWindow(QMainWindow):
         fps = self.fps.update()
         res = self.processor.process(frame, self.frame_counter,
                                      self.chk_bright.isChecked(), self.chk_gender.isChecked())
-        self.source_view.setPixmap(_to_pixmap(res.display))
-        self.result_view.setPixmap(_to_pixmap(res.processed))
-        self.status_label.setText(res.status)
-        self.engine_label.setText(f"Engine: {res.engine_label}")
-        self.fps_label.setText(f"FPS: {fps:.1f}")
-        self.exposure_label.setText(self.camera.status)
+        self._show_result(res.display, res.processed, res.status, res.engine_label,
+                          res.faces, f"{fps:.1f}", self.camera.status)
 
     def _on_adaptive(self, v: bool):
         self.prefs.set_bool("adaptive_exposure_enabled", v)
@@ -216,8 +281,7 @@ class MainWindow(QMainWindow):
         self.pipeline.set_bright_light_mode(v)
 
     def _on_update_found(self, url: str):
-        self.status_label.setText(f"New update found: {url}")
-        self.status_label.setStyleSheet("color: orange;")
+        self.status_bar.showMessage(f"New update found: {url}")
 
     def closeEvent(self, event):
         try:
@@ -234,6 +298,7 @@ class MainWindow(QMainWindow):
 def run_app() -> None:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setStyleSheet(LIGHT_QSS)
     w = MainWindow()
     w.show()
     sys.exit(app.exec())
