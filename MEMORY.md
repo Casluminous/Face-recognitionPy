@@ -23,3 +23,7 @@
 ## 2026-10-01 — White theme + bảng catalog trên cùng
 - Đã làm: `frames.py` thêm `FaceRow` + `FrameResult.faces` để fill bảng; viết lại `ui/main_window.py` — QSS trắng (#F8FAFC/#1E293B, nút chính xanh #16A34A), `QTableWidget` catalog 5 cột (ID/Gender/Confidence/Engine/Position) nằm trên cùng update live, status dồn vào `QStatusBar`.
 - Verify: `pytest 6 passed`; lint chỉ còn warning style cũ; render offscreen + screenshot đúng layout (chữ hiện ô vuông do offscreen thiếu font, máy thật OK).
+
+## 2026-10-01 — Nút Snapshot
+- Đã làm: `ui/main_window.py` thêm nút Snapshot (disable đến khi có kết quả đầu tiên), lưu ảnh processed qua save-dialog, tên mặc định `snapshot_YYYYMMDD_HHMMSS.jpg`, nhớ thư mục qua prefs `last_snapshot_dir`, lỗi báo statusbar.
+- Verify: `pytest 6 passed`; lint không thêm warning mới; test offscreen bấm snapshot ghi file JPG thật OK.

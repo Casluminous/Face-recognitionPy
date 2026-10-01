@@ -5,6 +5,8 @@ Light (white) theme, live face catalog table on top, status bar at bottom.
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -18,6 +20,7 @@ from ..config import AppConfig
 from ..detectors.ssd_haar import HaarFaceDetector, SsdFaceDetector
 from ..detectors.yolo import YoloFaceDetector
 from ..model_paths import ModelPaths
+from ..path_validator import sanitize_filename
 from ..processing.frames import FaceRow, FrameProcessor
 from ..processing.vision_fps import FpsCalculator
 from ..services.camera import CameraManager
@@ -110,6 +113,7 @@ class MainWindow(QMainWindow):
         self.frame_counter = 0
         self.camera_on = False
         self._catalog_key: tuple = ()
+        self._last_processed: np.ndarray | None = None
 
         # ---- widgets ----
         central = QWidget()
@@ -134,9 +138,12 @@ class MainWindow(QMainWindow):
         self.btn_image = QPushButton("Open Image")
         self.btn_camera = QPushButton("Start Camera")
         self.btn_camera.setObjectName("primary")
+        self.btn_snapshot = QPushButton("Snapshot")
+        self.btn_snapshot.setEnabled(False)
         self.camera_selector = QComboBox()
         top.addWidget(self.btn_image)
         top.addWidget(self.btn_camera)
+        top.addWidget(self.btn_snapshot)
         top.addWidget(self.camera_selector)
         top.addStretch(1)
         layout.addLayout(top)
@@ -177,6 +184,7 @@ class MainWindow(QMainWindow):
         # ---- signals ----
         self.btn_image.clicked.connect(self.select_image)
         self.btn_camera.clicked.connect(self.toggle_camera)
+        self.btn_snapshot.clicked.connect(self.take_snapshot)
         self.chk_adaptive.toggled.connect(self._on_adaptive)
         self.chk_bright.toggled.connect(self._on_bright)
         self.chk_gender.toggled.connect(lambda v: self.prefs.set_bool("gender_recognition_enabled", v))
@@ -220,11 +228,30 @@ class MainWindow(QMainWindow):
                      rows: list[FaceRow], fps_text: str, exposure: str) -> None:
         self.source_view.setPixmap(_to_pixmap(display))
         self.result_view.setPixmap(_to_pixmap(processed))
+        self._last_processed = processed
+        self.btn_snapshot.setEnabled(True)
         self._refresh_catalog(rows, engine)
         self.status_bar.showMessage(status)
         self.engine_label.setText(f"Engine: {engine}")
         self.fps_label.setText(f"FPS: {fps_text}")
         self.exposure_label.setText(exposure)
+
+    def take_snapshot(self):
+        if self._last_processed is None:
+            self.status_bar.showMessage("Nothing to save yet — open an image or start the camera")
+            return
+        start_dir = self.prefs.get_string("last_snapshot_dir", str(Path.home() / "Documents"))
+        stamp = datetime.now(UTC).astimezone().strftime("%Y%m%d_%H%M%S")
+        name = sanitize_filename(f"snapshot_{stamp}.jpg")
+        path, _ = QFileDialog.getSaveFileName(self, "Save snapshot", str(Path(start_dir) / name),
+                                              "JPEG (*.jpg);;PNG (*.png)")
+        if not path:
+            return
+        if cv2.imwrite(path, self._last_processed):
+            self.prefs.set_string("last_snapshot_dir", str(Path(path).parent))
+            self.status_bar.showMessage(f"Snapshot saved: {path}")
+        else:
+            self.status_bar.showMessage(f"Failed to save snapshot: {path}")
 
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select image", "",
