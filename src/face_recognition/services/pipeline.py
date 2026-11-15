@@ -7,7 +7,7 @@ import numpy as np
 
 from ..config import AppConfig
 from ..models import DetectionResult, FaceDetection
-from .tracker import FaceTracker
+from .tracker import FaceTracker, compute_containment, compute_iou
 
 
 class DetectionPipeline:
@@ -120,7 +120,28 @@ class DetectionPipeline:
             if ratio < self.cfg.min_aspect_ratio or ratio > self.cfg.max_aspect_ratio:
                 continue
             out.append(d)
-        return out
+        return self._dedupe_detections(out)
+
+    def _dedupe_detections(self, dets: list[FaceDetection]) -> list[FaceDetection]:
+        """NMS for SSD/Haar output.
+
+        SSD Caffe can return several boxes for one face (different anchors or
+        scales). Only YOLO applied NMS before, so the extras became extra
+        tracks and extra green rectangles.
+        """
+        if len(dets) < 2:
+            return dets
+        ordered = sorted(dets, key=lambda d: d.confidence, reverse=True)
+        kept: list[FaceDetection] = []
+        for d in ordered:
+            duplicate = any(
+                compute_iou(d.bbox, k.bbox) >= self.cfg.detection_nms_iou
+                or compute_containment(d.bbox, k.bbox) >= self.cfg.detection_nms_containment
+                for k in kept
+            )
+            if not duplicate:
+                kept.append(d)
+        return kept
 
     def _try_yolo(self, frame: np.ndarray, variant: str):
         if self.yolo is None or not self.yolo.is_available() or self._yolo_cooldown > 0:

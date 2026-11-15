@@ -23,6 +23,42 @@ def compute_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> f
     return inter / union if union > 0 else 0.0
 
 
+def compute_containment(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """Intersection over the smaller box.
+
+    Catches a resized/zoomed duplicate that sits inside another box but has
+    too little IoU to be treated as the same face.
+    """
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    x1, y1 = max(ax, bx), max(ay, by)
+    x2, y2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    smaller = min(max(1, aw * ah), max(1, bw * bh))
+    return inter / smaller
+
+
+def center_distance_ratio(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """Center distance normalised by the larger box side.
+
+    A face moving between detection cycles can have low IoU but the same
+    center a short distance away; this is the metric that keeps it one track.
+    """
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    acx, acy = ax + aw / 2.0, ay + ah / 2.0
+    bcx, bcy = bx + bw / 2.0, by + bh / 2.0
+    scale = max(1, aw, ah, bw, bh)
+    return math.hypot(acx - bcx, acy - bcy) / scale
+
+
+def size_similar(a: tuple[int, int, int, int], b: tuple[int, int, int, int],
+                 lo: float = 0.60, hi: float = 1.65) -> bool:
+    aw, ah = max(1, a[2]), max(1, a[3])
+    bw, bh = max(1, b[2]), max(1, b[3])
+    return lo <= bw / aw <= hi and lo <= bh / ah <= hi
+
+
 def _center(r: tuple[int, int, int, int]) -> tuple[float, float]:
     x, y, w, h = r
     return (x + w / 2.0, y + h / 2.0)
@@ -102,13 +138,20 @@ class FaceTracker:
             for ti, t in enumerate(self._tracks):
                 for di, d in enumerate(dets):
                     iou = compute_iou(t.bbox, d.bbox)
-                    if iou < self.cfg.tracker_iou:
+                    cont = compute_containment(t.bbox, d.bbox)
+                    dist = center_distance_ratio(t.bbox, d.bbox)
+                    similar = size_similar(t.bbox, d.bbox)
+                    center_match = similar and dist <= self.cfg.tracker_center_match
+                    if iou < self.cfg.tracker_iou and cont < self.cfg.tracker_containment and not center_match:
                         continue
+                    overlap = max(iou, cont)
+                    if center_match:
+                        overlap = max(overlap, 1.0 - dist)
                     ax, ay = _center(t.bbox)
                     bx, by = _center(d.bbox)
                     diag = math.hypot(max(t.bbox[2], d.bbox[2]), max(t.bbox[3], d.bbox[3])) or 1.0
                     penalty = min(1.0, math.hypot(ax - bx, ay - by) / diag)
-                    score = iou * 0.75 + (1 - penalty) * 0.25
+                    score = overlap * 0.75 + (1 - penalty) * 0.25
                     pairs.append((score, ti, di))
             pairs.sort(reverse=True)
             matched_t, matched_d = set(), set()
@@ -124,6 +167,7 @@ class FaceTracker:
             for di, d in enumerate(dets):
                 if di not in matched_d:
                     self._create_track(d, gray, W, H)
+            self._dedupe_locked()
             self._prune()
             return self._snapshot_locked()
 
@@ -162,6 +206,7 @@ class FaceTracker:
                 t.consec_tracked_only += 1
                 t.missed = 0
                 self._refresh_locked(t, gray, W, H)
+            self._dedupe_locked()
             self._prune()
             return self._snapshot_locked()
 
@@ -194,14 +239,44 @@ class FaceTracker:
             return
         t.template = gray[r[1]:r[1] + r[3], r[0]:r[0] + r[2]].copy()
 
+    def _dedupe_locked(self) -> None:
+        """Drop duplicate tracks that cover the same face.
+
+        Template matching can keep an orphaned track alive forever once a
+        fresh detection fails to match it, which shows up as 2-3 green boxes
+        on one face. Keep the most established track (confirm, score, age).
+        """
+        if len(self._tracks) < 2:
+            return
+        ordered = sorted(self._tracks, key=lambda t: (-t.confirm, -t.last_score, t.tid))
+        kept: list[_Track] = []
+        for t in ordered:
+            if any(self._same_face(t, k) for k in kept):
+                continue
+            kept.append(t)
+        self._tracks = kept
+
+    def _same_face(self, a: _Track, b: _Track) -> bool:
+        if compute_iou(a.bbox, b.bbox) >= self.cfg.tracker_merge_iou:
+            return True
+        if compute_containment(a.bbox, b.bbox) >= self.cfg.tracker_merge_containment:
+            return True
+        # Moving faces: two tracks can both follow one face with a lag, so
+        # their boxes overlap only partially. Same size + close centers = dup.
+        return (size_similar(a.bbox, b.bbox)
+                and center_distance_ratio(a.bbox, b.bbox) <= self.cfg.tracker_center_merge)
+
     def _prune(self) -> None:
         mx = self.cfg.tracker_max_missed
+        # New tracks must survive long enough to see the next detection cycle;
+        # pruned earlier they re-appear with a fresh ID every few frames.
+        grace = max(3, self.cfg.tracker_tracked_only_grace)
         self._tracks = [t for t in self._tracks
-                        if not (t.missed > mx or (t.confirm < 2 and t.consec_tracked_only > 3)
-                                or (t.confirm < 3 and t.consec_tracked_only > 8))]
+                        if not (t.missed > mx or (t.confirm < 3 and t.consec_tracked_only > grace))]
 
     def _snapshot_locked(self) -> list[TrackedFace]:
-        out = [TrackedFace(t.tid, *t.bbox, list(t.landmarks), t.last_score, t.tracked_only)
+        out = [TrackedFace(t.tid, *t.bbox, list(t.landmarks), t.last_score, t.tracked_only,
+                           t.confirm)
                for t in self._tracks]
         out.sort(key=lambda f: f.track_id)
         return out

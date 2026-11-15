@@ -25,6 +25,7 @@ class CameraManager:
         self.camera_index = 0
         self.adaptive = True
         self._last_tune = -(1 << 62)
+        self._driver_locked = False
         self.brightness = 0.0
         self.status = "Exposure: Ready"
 
@@ -50,6 +51,7 @@ class CameraManager:
             cap.read()
         self.cap = cap
         self.camera_index = index
+        self._driver_locked = False
         return True
 
     def start_capture(self, handler: Callable[[np.ndarray], None]) -> bool:
@@ -112,6 +114,9 @@ class CameraManager:
     def optimize_exposure(self, cur: int, seed: np.ndarray | None = None) -> bool:
         if not self.adaptive or self.cap is None or not self.cap.isOpened():
             return False
+        if self._driver_locked:
+            self.status = "Exposure: Driver locked"
+            return False
         if cur - self._last_tune < self.cfg.exposure_retune_interval:
             return False
         base = float(estimate_brightness(seed)) if seed is not None else self._sample_brightness(3)
@@ -147,17 +152,26 @@ class CameraManager:
             orig = 0.0
         settle = self.cfg.exposure_settle_ms / 1000.0
         best, best_b = None, base
+        applied = 0
         for cand in self._build_candidates(orig):
             try:
-                self.cap.set(cv2.CAP_PROP_EXPOSURE, cand)
+                if not self.cap.set(cv2.CAP_PROP_EXPOSURE, cand):
+                    continue
             except Exception:
                 continue
+            applied += 1
             time.sleep(settle)
             cb = self._sample_brightness(2)
             if cb >= self.cfg.exposure_min and cb < best_b:
                 best, best_b = cand, cb
             if cb <= self.cfg.exposure_target and base - cb >= self.cfg.exposure_drop:
                 break
+        if applied == 0:
+            # Driver refuses every write (common with MSMF/DirectShow): do not
+            # stall the capture thread for ~0.5s on every retune cycle.
+            self._driver_locked = True
+            self.status = "Exposure: Driver locked"
+            return False
         if best is not None:
             try:
                 self.cap.set(cv2.CAP_PROP_EXPOSURE, best)
@@ -194,6 +208,7 @@ class CameraManager:
         if enabled:
             self.status = "Exposure: Assist enabled"
             self._last_tune = -(1 << 62)
+            self._driver_locked = False
         else:
             try:
                 for m in self.cfg.parse_double_array("camera.exposure.automatic.modes", [3.0, 0.75]):

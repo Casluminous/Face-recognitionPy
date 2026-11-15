@@ -14,6 +14,49 @@ from .gender import classify
 log = logging.getLogger(__name__)
 
 
+def square_crop(image: np.ndarray, rect, pad: float = 0.30) -> np.ndarray | None:
+    """Crop a padded square around ``rect``.
+
+    The gender net always receives a square blob; cropping a square first
+    keeps the face proportions intact instead of stretching a tall box.
+    """
+    H, W = image.shape[:2]
+    x, y, w, h = rect
+    if w <= 0 or h <= 0:
+        return None
+    side = round(max(w, h) * (1.0 + pad))
+    side = max(1, min(side, W, H))
+    cx, cy = x + w / 2.0, y + h / 2.0
+    x1 = min(max(0, round(cx - side / 2.0)), W - side)
+    y1 = min(max(0, round(cy - side / 2.0)), H - side)
+    crop = image[y1:y1 + side, x1:x1 + side]
+    return crop.copy() if crop.size else None
+
+
+def crop_quality_ok(face: np.ndarray, size: int, min_sharpness: float,
+                    min_brightness: float, max_brightness: float) -> bool:
+    """Reject crops the gender net would only hallucinate on.
+
+    Blur, near-dark and blown-out frames are exactly what makes the Caffe
+    gender model answer "Male" with high confidence on a fresh camera.
+    Sharpness is measured on the network-sized crop so the threshold does
+    not depend on the face size in the frame.
+    """
+    if face is None or face.size == 0:
+        return False
+    gray = face if face.ndim == 2 else cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+    if gray.size == 0:
+        return False
+    mean = float(np.mean(gray))
+    if not (min_brightness <= mean <= max_brightness):
+        return False
+    if gray.shape[1] != size or gray.shape[0] != size:
+        interp = cv2.INTER_AREA if gray.shape[0] > size else cv2.INTER_LINEAR
+        gray = cv2.resize(gray, (size, size), interpolation=interp)
+    variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    return math.isfinite(variance) and variance >= min_sharpness
+
+
 class FaceDetectorService:
     def __init__(self, ssd_model: str, ssd_config: str, gender_model: str, gender_config: str,
                  cfg: AppConfig | None = None, confidence: float = 0.35):
@@ -36,6 +79,10 @@ class FaceDetectorService:
         self.face_size = self.cfg.face_input_size
         self.gender_size = self.cfg.gender_input_size
         self.gender_min_conf = self.cfg.gender_min_confidence
+        self.gender_min_face_px = self.cfg.gender_min_face_px
+        self.gender_min_sharpness = self.cfg.gender_min_sharpness
+        self.gender_min_brightness = self.cfg.gender_min_brightness
+        self.gender_max_brightness = self.cfg.gender_max_brightness
 
     @property
     def gender_available(self) -> bool: return self._gender_ok
@@ -76,29 +123,37 @@ class FaceDetectorService:
         return cv2.warpAffine(image, M, (S, S), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
     def _default_crop(self, image: np.ndarray, rect):
-        H, W = image.shape[:2]
-        x, y, w, h = rect
-        padx, pady = round(w * 0.18), round(h * 0.22)
-        x1, y1 = max(0, x - padx), max(0, y - pady)
-        x2, y2 = min(W, x + w + padx), min(H, y + h + pady)
-        if x2 <= x1 or y2 <= y1:
-            return None
-        return image[y1:y2, x1:x2].copy()
+        return square_crop(image, rect)
 
-    def predict_gender(self, image: np.ndarray, rect, landmarks=None) -> tuple[str, str]:
+    def predict_gender(self, image: np.ndarray, rect,
+                       landmarks=None) -> tuple[str, str] | None:
+        """Predict gender for one face.
+
+        Returns ``None`` when the crop is too small/blurry/dark to judge.
+        ``None`` means "do not vote" — callers keep the previous cached
+        label instead of displaying a fresh, unreliable guess.
+        """
         if not self._gender_ok or image is None or image.size == 0:
-            return ("Unknown", "")
+            return None
         H, W = image.shape[:2]
+        _, _, w, h = rect
+        if w <= 0 or h <= 0 or min(w, h) < self.gender_min_face_px:
+            return None
         face = None
         try:
             if landmarks and self.has_usable_landmarks(landmarks, rect, W, H):
                 face = self._aligned_face(image, rect, landmarks)
             else:
                 face = self._default_crop(image, rect)
-        except Exception:
+        except (cv2.error, ValueError, TypeError) as e:
+            log.debug("gender crop failed: %s", e)
             face = None
         if face is None or face.size == 0:
-            return ("Unknown", "")
+            return None
+        if not crop_quality_ok(face, self.gender_size, self.gender_min_sharpness,
+                               self.gender_min_brightness, self.gender_max_brightness):
+            log.debug("gender crop rejected (blur/brightness/size)")
+            return None
         blob = cv2.dnn.blobFromImage(face, 1.0, (self.gender_size, self.gender_size),
                                      self.gender_mean, swapRB=False, crop=False)
         with self._lock:
@@ -130,9 +185,11 @@ class FaceDetectorService:
         rects = self.detect_faces(image)
         for (x, y, w, h) in rects:
             cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            label, pct = self.predict_gender(image, (x, y, w, h))
-            cv2.putText(image, f"{label} {pct}", (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            res = self.predict_gender(image, (x, y, w, h))
+            if res is not None:
+                label, pct = res
+                cv2.putText(image, f"{label} {pct}".strip(), (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         return len(rects)
 
     def close(self) -> None:

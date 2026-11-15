@@ -46,7 +46,9 @@ class FrameProcessor:
         self.cfg = cfg or AppConfig.get_instance()
         self.pipeline = pipeline
         self.face_service = face_service
-        self.cache = GenderCacheManager(self.cfg.gender_vote_window)
+        self.cache = GenderCacheManager(self.cfg.gender_vote_window, self.cfg.gender_min_votes)
+        self._warmup_interval = max(1, self.cfg.gender_warmup_interval)
+        self._min_confirm = max(1, self.cfg.gender_min_track_confirm)
         self._last_gender: dict[int, int] = {}
 
     def reset(self) -> None:
@@ -72,11 +74,23 @@ class FrameProcessor:
         return f
 
     def _should_predict(self, tid: int, cur: int) -> bool:
+        # Vote quickly until a label is actually decided (0.3-0.6s on camera),
+        # then slow down to the normal interval to save CPU. Using the decided
+        # label (not the raw vote count) keeps 2-1 splits from stalling.
+        interval = (self.cfg.gender_prediction_interval
+                    if self.cache.get(tid) is not None
+                    else self._warmup_interval)
         last = self._last_gender.get(tid, -(1 << 62))
-        has = self.cache.contains(tid)
-        return (not has) or (cur - last) >= self.cfg.gender_prediction_interval
+        return (cur - last) >= interval
 
-    def process(self, frame: np.ndarray, cur: int, bright_mode: bool, gender_on: bool) -> FrameResult:
+    def process(self, frame: np.ndarray, cur: int, bright_mode: bool, gender_on: bool,
+                static: bool = False) -> FrameResult:
+        """Process one frame.
+
+        ``static`` is for single-shot images: a still has only one detection,
+        so confirmation/vote history would hide it forever. There the first
+        detection is trusted and gender is shown from a single prediction.
+        """
         display = self._prepare_display(frame)
         bright_scene = bool(is_likely_overexposed(display, self.cfg))
         analysis = (prepare_for_face_detection(display, self.cfg)
@@ -85,26 +99,42 @@ class FrameProcessor:
         out = display.copy()
         active: set[int] = set()
         rows: list[FaceRow] = []
+        gender_usable = (gender_on and self.face_service is not None
+                         and self.face_service.gender_available)
         for face in det.faces:
             active.add(face.track_id)
+            # Don't draw a box until a second detection confirms the face.
+            # One-frame false positives (profile turn, fast motion) would
+            # otherwise flash an extra green rectangle.
+            if not static and face.confirm < self._min_confirm:
+                continue
             x, y, w, h = face.x, face.y, face.w, face.h
             cv2.rectangle(out, (x, y), (x + w, y + h), (0, 255, 0), 2)
             label, pct = "", ""
-            if gender_on and self.face_service is not None and self.face_service.gender_available:
-                if self._should_predict(face.track_id, cur):
-                    res = self.face_service.predict_gender(analysis, (x, y, w, h), face.landmarks)
-                    self.cache.put(face.track_id, res)
-                    self._last_gender[face.track_id] = cur
-            if gender_on:
-                info = self.cache.get(face.track_id)
-                if info is not None:
-                    label, pct = info[0], info[1]
-                    cv2.putText(out, f"{label} {pct}", (x, max(0, y - 10)),
+            if gender_usable:
+                # Predict on the natural image (the CLAHE/gamma analysis frame
+                # is for detection only — it skews skin tones).
+                if static:
+                    pred = self.face_service.predict_gender(display, (x, y, w, h), face.landmarks)
+                    if pred is not None:
+                        label, pct = pred
+                else:
+                    if self._should_predict(face.track_id, cur):
+                        res = self.face_service.predict_gender(display, (x, y, w, h), face.landmarks)
+                        if res is not None:
+                            self.cache.put(face.track_id, res)
+                        self._last_gender[face.track_id] = cur
+                    info = self.cache.get(face.track_id)
+                    if info is not None:
+                        label, pct = info
+                text = f"{label} {pct}".strip()
+                if text:
+                    cv2.putText(out, text, (x, max(0, y - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             rows.append(FaceRow(face.track_id, x, y, w, h, label, pct, face.confidence))
         self.cache.retain_all(active)
         for tid in list(self._last_gender.keys()):
             if tid not in active:
                 del self._last_gender[tid]
-        status = f"{len(det.faces)} face(s) detected"
+        status = f"{len(rows)} face(s) detected"
         return FrameResult(display, out, status, det.engine_label, bright_scene, rows)

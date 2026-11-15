@@ -13,8 +13,15 @@ _DEFAULTS: dict[str, str] = {
     "camera.shutdown.timeout.ms": "2000",
     "detection.interval.frames": "5",
     "detection.gender.prediction.interval": "30",
+    "detection.gender.warmup.interval": "4",
+    "detection.gender.min.votes": "3",
+    "detection.gender.min.track.confirm": "2",
     "detection.gender.min.confidence": "0.70",
     "detection.gender.vote.window": "5",
+    "detection.gender.min.face.px": "56",
+    "detection.gender.min.sharpness": "3.0",
+    "detection.gender.min.brightness": "40.0",
+    "detection.gender.max.brightness": "225.0",
     "detection.exposure.retune.interval": "120",
     "detection.box.change.threshold": "0.15",
     "detection.min.face.size.ratio": "0.07",
@@ -35,6 +42,12 @@ _DEFAULTS: dict[str, str] = {
     "tracker.search.expansion": "0.45",
     "tracker.rect.smoothing": "0.60",
     "tracker.max.missed.frames": "6",
+    "tracker.tracked.only.grace.frames": "12",
+    "tracker.containment.threshold": "0.80",
+    "tracker.center.match.ratio": "0.90",
+    "tracker.center.merge.ratio": "0.60",
+    "tracker.merge.iou": "0.55",
+    "tracker.merge.containment": "0.85",
     "image.display.max.width": "640",
     "update.check.timeout.seconds": "5",
     "update.download.timeout.seconds": "600",
@@ -54,6 +67,8 @@ _DEFAULTS: dict[str, str] = {
     "haar.min.neighbors": "7",
     "detection.min.aspect.ratio": "0.5",
     "detection.max.aspect.ratio": "1.6",
+    "detection.nms.iou": "0.45",
+    "detection.nms.containment": "0.85",
     "detection.face.mean": "104.0,177.0,123.0",
     "detection.gender.mean": "78.4263377603,87.7689143744,114.895847746",
     "detection.face.input.size": "300",
@@ -163,9 +178,23 @@ class AppConfig:
     @property
     def gender_prediction_interval(self) -> int: return self.get_int("detection.gender.prediction.interval", 30)
     @property
+    def gender_warmup_interval(self) -> int: return self.get_int("detection.gender.warmup.interval", 4)
+    @property
+    def gender_min_votes(self) -> int: return self.get_int("detection.gender.min.votes", 3)
+    @property
+    def gender_min_track_confirm(self) -> int: return self.get_int("detection.gender.min.track.confirm", 2)
+    @property
     def gender_min_confidence(self) -> float: return self.get_float("detection.gender.min.confidence", 0.70)
     @property
     def gender_vote_window(self) -> int: return self.get_int("detection.gender.vote.window", 5)
+    @property
+    def gender_min_face_px(self) -> int: return self.get_int("detection.gender.min.face.px", 56)
+    @property
+    def gender_min_sharpness(self) -> float: return self.get_float("detection.gender.min.sharpness", 3.0)
+    @property
+    def gender_min_brightness(self) -> float: return self.get_float("detection.gender.min.brightness", 40.0)
+    @property
+    def gender_max_brightness(self) -> float: return self.get_float("detection.gender.max.brightness", 225.0)
     @property
     def exposure_retune_interval(self) -> int: return self.get_int("detection.exposure.retune.interval", 120)
     @property
@@ -201,6 +230,24 @@ class AppConfig:
     @property
     def tracker_max_missed(self) -> int: return self.get_int("tracker.max.missed.frames", 6)
     @property
+    def tracker_tracked_only_grace(self) -> int:
+        return self.get_int("tracker.tracked.only.grace.frames", 12)
+    @property
+    def tracker_containment(self) -> float:
+        return self.get_float("tracker.containment.threshold", 0.80)
+    @property
+    def tracker_center_match(self) -> float:
+        return self.get_float("tracker.center.match.ratio", 0.90)
+    @property
+    def tracker_center_merge(self) -> float:
+        return self.get_float("tracker.center.merge.ratio", 0.60)
+    @property
+    def tracker_merge_iou(self) -> float:
+        return self.get_float("tracker.merge.iou", 0.55)
+    @property
+    def tracker_merge_containment(self) -> float:
+        return self.get_float("tracker.merge.containment", 0.85)
+    @property
     def display_max_width(self) -> int: return self.get_int("image.display.max.width", 640)
     @property
     def update_check_timeout(self) -> int: return self.get_int("update.check.timeout.seconds", 5)
@@ -232,6 +279,11 @@ class AppConfig:
     def min_aspect_ratio(self) -> float: return self.get_float("detection.min.aspect.ratio", 0.5)
     @property
     def max_aspect_ratio(self) -> float: return self.get_float("detection.max.aspect.ratio", 1.6)
+    @property
+    def detection_nms_iou(self) -> float: return self.get_float("detection.nms.iou", 0.45)
+    @property
+    def detection_nms_containment(self) -> float:
+        return self.get_float("detection.nms.containment", 0.85)
     @property
     def face_input_size(self) -> int: return self.get_int("detection.face.input.size", 300)
     @property

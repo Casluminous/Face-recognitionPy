@@ -33,6 +33,7 @@ class TrackedFace:
     landmarks: list[tuple[float, float]] = field(default_factory=list)
     confidence: float = 0.0
     tracked_only: bool = False
+    confirm: int = 0
 
     @property
     def bbox(self) -> tuple[int, int, int, int]:

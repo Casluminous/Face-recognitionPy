@@ -5,7 +5,9 @@ Light (white) theme, live face catalog table on top, status bar at bottom.
 from __future__ import annotations
 
 import csv
+import logging
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +31,8 @@ from ..services.face_service import FaceDetectorService
 from ..services.pipeline import DetectionPipeline
 from ..services.prefs import PreferencesService
 from ..services.update_security import UpdateService
+
+log = logging.getLogger(__name__)
 
 LIGHT_QSS = """
 QMainWindow, QWidget { background: #F8FAFC; color: #1E293B; font-size: 13px; }
@@ -73,16 +77,48 @@ def _to_pixmap(frame: np.ndarray, max_w: int = 640) -> QPixmap:
     return QPixmap.fromImage(qimg.copy())
 
 
+class CameraProbe(QThread):
+    """Enumerate cameras off the UI thread — probing every index blocks seconds."""
+    found = Signal(list)
+
+    def __init__(self, max_index: int = 6):
+        super().__init__()
+        self.max_index = max_index
+
+    def run(self):
+        try:
+            cams = CameraManager.detect_cameras(self.max_index)
+        except Exception as e:  # noqa: BLE001 - backend drivers raise arbitrary errors
+            log.warning("camera probe failed: %s", e)
+            cams = []
+        self.found.emit(cams)
+
+
 class CameraWorker(QThread):
     frame_ready = Signal(object)
 
     def __init__(self, manager: CameraManager):
         super().__init__()
         self.manager = manager
+        # Drop frames while the UI is still busy: without this the Qt event
+        # queue grows without bound and labels lag seconds behind the camera.
+        self._busy = False
+        self._busy_lock = threading.Lock()
 
     def run(self):
-        self.manager.start_capture(lambda f: self.frame_ready.emit(f))
+        self.manager.start_capture(self._submit)
         self.exec()
+
+    def _submit(self, frame):
+        with self._busy_lock:
+            if self._busy:
+                return
+            self._busy = True
+        self.frame_ready.emit(frame)
+
+    def release(self):
+        with self._busy_lock:
+            self._busy = False
 
     def stop(self):
         self.manager.stop()
@@ -124,12 +160,14 @@ class MainWindow(QMainWindow):
         self.fps = FpsCalculator(self.cfg.fps_smoothing)
         self.updater = UpdateService(self.cfg)
         self.worker: CameraWorker | None = None
+        self._probe: CameraProbe | None = None
         self.frame_counter = 0
         self.camera_on = False
         self._catalog_key: tuple = ()
         self._last_processed: np.ndarray | None = None
         self._last_rows: list[FaceRow] = []
         self._last_engine: str = "--"
+        self._frame_errors = 0
 
         # ---- widgets ----
         central = QWidget()
@@ -213,16 +251,28 @@ class MainWindow(QMainWindow):
         self.updater.check_for_updates(self._on_update_found, lambda e: None)
 
     def refresh_cameras(self):
+        """Start background camera discovery; the window stays responsive."""
+        if self._probe is not None and self._probe.isRunning():
+            return
         self.camera_selector.clear()
-        cams = CameraManager.detect_cameras()
+        self.camera_selector.addItem("Detecting...")
+        self.btn_camera.setEnabled(False)
+        self._probe = CameraProbe()
+        self._probe.found.connect(self._on_cameras_found)
+        self._probe.start()
+
+    def _on_cameras_found(self, cams: list):
+        self.camera_selector.clear()
         if not cams:
             self.camera_selector.addItem("No Camera Found")
-        else:
-            for i in cams:
-                self.camera_selector.addItem(f"Camera {i}", i)
-            last = self.prefs.get_int("last_camera_index", cams[0])
-            idx = cams.index(last) if last in cams else 0
-            self.camera_selector.setCurrentIndex(idx)
+            self.btn_camera.setEnabled(False)
+            return
+        for i in cams:
+            self.camera_selector.addItem(f"Camera {i}", i)
+        last = self.prefs.get_int("last_camera_index", cams[0])
+        idx = cams.index(last) if last in cams else 0
+        self.camera_selector.setCurrentIndex(idx)
+        self.btn_camera.setEnabled(True)
 
     def _selected_camera(self) -> int:
         data = self.camera_selector.currentData()
@@ -300,12 +350,14 @@ class MainWindow(QMainWindow):
             return
         if self.camera_on:
             self.toggle_camera()
+        self._frame_errors = 0
         img = cv2.imread(path)
         if img is None:
             self.status_bar.showMessage("Failed to read image")
             return
         self.processor.reset()
-        res = self.processor.process(img, 1, self.chk_bright.isChecked(), self.chk_gender.isChecked())
+        res = self.processor.process(img, 1, self.chk_bright.isChecked(),
+                                     self.chk_gender.isChecked(), static=True)
         self._show_result(res.display, res.processed, res.status, res.engine_label,
                           res.faces, "Static", "Exposure: N/A")
 
@@ -318,6 +370,9 @@ class MainWindow(QMainWindow):
             self.camera.close()
             self.btn_camera.setText("Start Camera")
             return
+        if self.camera_selector.currentData() is None:
+            self.status_bar.showMessage("No camera available")
+            return
         if not self.camera.open(self._selected_camera()):
             self.status_bar.showMessage("Failed to open camera")
             return
@@ -325,19 +380,34 @@ class MainWindow(QMainWindow):
         self.processor.reset()
         self.fps.reset()
         self.camera.set_adaptive(self.chk_adaptive.isChecked())
-        self.worker = CameraWorker(self.camera)
-        self.worker.frame_ready.connect(self.on_frame)
-        self.worker.start()
+        worker = CameraWorker(self.camera)
+        worker.frame_ready.connect(lambda frame, w=worker: self.on_frame(frame, w))
+        self.worker = worker
+        worker.start()
         self.camera_on = True
+        self.frame_counter = 0
+        self._frame_errors = 0
         self.btn_camera.setText("Stop Camera")
 
-    def on_frame(self, frame: np.ndarray):
-        self.frame_counter += 1
-        fps = self.fps.update()
-        res = self.processor.process(frame, self.frame_counter,
-                                     self.chk_bright.isChecked(), self.chk_gender.isChecked())
-        self._show_result(res.display, res.processed, res.status, res.engine_label,
-                          res.faces, f"{fps:.1f}", self.camera.status)
+    def on_frame(self, frame: np.ndarray, worker: CameraWorker | None = None):
+        try:
+            if not self.camera_on:
+                return
+            self.frame_counter += 1
+            fps = self.fps.update()
+            res = self.processor.process(frame, self.frame_counter,
+                                         self.chk_bright.isChecked(), self.chk_gender.isChecked())
+            self._show_result(res.display, res.processed, res.status, res.engine_label,
+                              res.faces, f"{fps:.1f}", self.camera.status)
+        except Exception as e:
+            # One bad frame must not flood stderr every frame or freeze the UI.
+            self._frame_errors += 1
+            if self._frame_errors == 1:
+                log.exception("frame processing failed")
+            self.status_bar.showMessage(f"Processing error: {e}")
+        finally:
+            if isinstance(worker, CameraWorker):
+                worker.release()
 
     def _on_adaptive(self, v: bool):
         self.prefs.set_bool("adaptive_exposure_enabled", v)
@@ -356,6 +426,8 @@ class MainWindow(QMainWindow):
             self.prefs.set_float("window_height", float(self.height()))
             if self.worker:
                 self.worker.stop()
+            if self._probe is not None and self._probe.isRunning():
+                self._probe.wait(3000)
             self.camera.close()
             self.pipeline.close()
         finally:
