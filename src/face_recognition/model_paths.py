@@ -6,6 +6,7 @@ from pathlib import Path
 
 FACE_DIR = Path("data") / "models" / "face"
 GENDER_DIR = Path("data") / "models" / "gender"
+RECOGNITION_DIR = Path("data") / "models" / "recognition"
 HAAR_DIR = Path("data") / "haarcascade"
 
 YOLO_FILE = "yolov8n-face.onnx"
@@ -13,6 +14,7 @@ SSD_MODEL = "res10_300x300_ssd_iter_140000.caffemodel"
 SSD_CONFIG = "deploy.prototxt"
 GENDER_MODEL = "gender_net.caffemodel"
 GENDER_CONFIG = "gender_deploy.prototxt"
+SFACE_MODEL = "face_recognition_sface_2021dec.onnx"
 HAAR_FILE = "haarcascade_frontalface_default.xml"
 
 
@@ -68,11 +70,14 @@ class ModelPaths:
     @property
     def gender_config_path(self) -> Path: return self.base / "models" / "gender" / GENDER_CONFIG
     @property
+    def sface_path(self) -> Path: return self.base / "models" / "recognition" / SFACE_MODEL
+    @property
     def haar_path(self) -> Path: return self.base / "haarcascade" / HAAR_FILE
 
     def has_yolo(self) -> bool: return self.yolo_path.is_file()
     def has_ssd(self) -> bool: return self.ssd_model_path.is_file() and self.ssd_config_path.is_file()
     def has_gender(self) -> bool: return self.gender_model_path.is_file() and self.gender_config_path.is_file()
+    def has_sface(self) -> bool: return self.sface_path.is_file()
     def has_haar(self) -> bool: return self.haar_path.is_file()
 
     def missing_files(self) -> list[str]:

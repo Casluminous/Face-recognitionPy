@@ -14,7 +14,7 @@
 - Phân loại giới tính bằng CaffeNet.
 - Giao diện PySide6, xử lý ảnh tĩnh và webcam.
 
-Ứng dụng chưa có khả năng nhận diện danh tính. YOLOv8-face chỉ trả về hộp và 5 landmark, không biết người đó là ai. Vì vậy tính năng mới dùng YOLO để phát hiện/căn chỉnh, và dùng SFace để tạo embedding so khớp.
+Ứng dụng chưa có khả năng nhận diện danh tính. YOLOv8-face hiện tại trả về hộp khuôn mặt; một số biến thể có thêm 5 landmark, nhưng model đang dùng chỉ trả bbox. Vì vậy tính năng mới dùng YOLO để phát hiện, tùy chọn dùng landmark nếu detector cung cấp, và dùng SFace để tạo embedding so khớp.
 
 ## 2. Mục tiêu
 
@@ -102,13 +102,14 @@
 
 ### Alignment
 
-- YOLO trả về 5 landmark. Tạo face row 15 phần tử:
+- Nếu detector trả về 5 landmark (YOLO keypoint model hoặc detector khác), tạo face row 15 phần tử:
   `[x, y, w, h, lx1, ly1, ..., lx5, ly5]`
 - Gọi `FaceRecognizerSF.alignCrop(image, face_row)` để có ảnh 112×112.
-- Nếu không có landmark (SSD/Haar):
+- Model YOLOv8-face hiện tại chỉ trả bbox, nên mặc định:
   - Crop vuông quanh bbox, padding 30%.
   - Resize về 112×112.
   - Vẫn tạo embedding nhưng đánh dấu `alignment=fallback`.
+- Có thể bổ sung YuNet/keypoint model ở phase sau để cải thiện alignment mà không đổi kiến trúc.
 - Không dùng ảnh CLAHE/gamma cho embedding; dùng ảnh BGR gốc để tránh lệch màu.
 
 ### Chất lượng ảnh enroll
@@ -337,7 +338,7 @@ Nếu chưa có, có thể dùng ảnh công khai/ảnh mẫu cho test kỹ thu�
 | Rủi ro | Giảm thiểu |
 |---|---|
 | SFace kém chính xác với góc mặt lạ | Yêu cầu 3–5 ảnh đa góc; threshold + margin; fallback Unknown |
-| YOLO không chạy, không có landmark | Fallback SSD + crop vuông; đánh dấu alignment fallback |
+| YOLO không có landmark (model hiện tại) | Fallback crop vuông; có thể bổ sung YuNet/keypoint model sau |
 | Nhận nhầm người lạ | Margin top1-top2, vote, threshold; test người lạ |
 | UI treo khi embedding | Chỉ chạy mỗi 15 frame; measure; worker nếu >30 ms |
 | Mất dữ liệu khi xóa/sửa | Transaction + rollback + xóa file có kiểm soát |

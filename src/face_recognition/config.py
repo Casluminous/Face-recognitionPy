@@ -48,6 +48,22 @@ _DEFAULTS: dict[str, str] = {
     "tracker.center.merge.ratio": "0.60",
     "tracker.merge.iou": "0.55",
     "tracker.merge.containment": "0.85",
+    "recognition.enabled": "true",
+    "recognition.detector": "yolo",
+    "recognition.embedding.model": "face_recognition_sface_2021dec.onnx",
+    "recognition.match.threshold": "0.36",
+    "recognition.match.margin": "0.05",
+    "recognition.min.votes": "3",
+    "recognition.vote.window": "4",
+    "recognition.update.interval.frames": "15",
+    "recognition.min.face.px": "80",
+    "recognition.min.sharpness": "3.0",
+    "recognition.min.brightness": "40.0",
+    "recognition.max.brightness": "225.0",
+    "recognition.enrollment.min.images": "3",
+    "recognition.enrollment.max.images": "5",
+    "recognition.db.path": "data/recognition/people.sqlite3",
+    "recognition.people.dir": "data/recognition/people",
     "image.display.max.width": "640",
     "update.check.timeout.seconds": "5",
     "update.download.timeout.seconds": "600",
@@ -247,6 +263,54 @@ class AppConfig:
     @property
     def tracker_merge_containment(self) -> float:
         return self.get_float("tracker.merge.containment", 0.85)
+    @property
+    def recognition_enabled(self) -> bool:
+        return self.get_bool("recognition.enabled", True)
+    @property
+    def recognition_detector(self) -> str:
+        return self.get_string("recognition.detector", "yolo")
+    @property
+    def recognition_embedding_model(self) -> str:
+        return self.get_string("recognition.embedding.model", "face_recognition_sface_2021dec.onnx")
+    @property
+    def recognition_match_threshold(self) -> float:
+        return self.get_float("recognition.match.threshold", 0.36)
+    @property
+    def recognition_match_margin(self) -> float:
+        return self.get_float("recognition.match.margin", 0.05)
+    @property
+    def recognition_min_votes(self) -> int:
+        return self.get_int("recognition.min.votes", 3)
+    @property
+    def recognition_vote_window(self) -> int:
+        return self.get_int("recognition.vote.window", 4)
+    @property
+    def recognition_update_interval(self) -> int:
+        return self.get_int("recognition.update.interval.frames", 15)
+    @property
+    def recognition_min_face_px(self) -> int:
+        return self.get_int("recognition.min.face.px", 80)
+    @property
+    def recognition_min_sharpness(self) -> float:
+        return self.get_float("recognition.min.sharpness", 3.0)
+    @property
+    def recognition_min_brightness(self) -> float:
+        return self.get_float("recognition.min.brightness", 40.0)
+    @property
+    def recognition_max_brightness(self) -> float:
+        return self.get_float("recognition.max.brightness", 225.0)
+    @property
+    def recognition_enrollment_min_images(self) -> int:
+        return self.get_int("recognition.enrollment.min.images", 3)
+    @property
+    def recognition_enrollment_max_images(self) -> int:
+        return self.get_int("recognition.enrollment.max.images", 5)
+    @property
+    def recognition_db_path(self) -> str:
+        return self.get_string("recognition.db.path", "data/recognition/people.sqlite3")
+    @property
+    def recognition_people_dir(self) -> str:
+        return self.get_string("recognition.people.dir", "data/recognition/people")
     @property
     def display_max_width(self) -> int: return self.get_int("image.display.max.width", 640)
     @property
