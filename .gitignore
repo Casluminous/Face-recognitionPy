@@ -19,6 +19,9 @@ installer-output/
 .coverage
 htmlcov/
 
+# Runtime recognition data (local people/embeddings)
+data/recognition/
+
 # OS / editors
 .DS_Store
 Thumbs.db

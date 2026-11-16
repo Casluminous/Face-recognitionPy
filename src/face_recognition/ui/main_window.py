@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import sys
 import threading
 from datetime import UTC, datetime
@@ -340,7 +341,11 @@ class MainWindow(QMainWindow):
         path = Path(value)
         if path.is_absolute():
             return path
-        return self.mp.base.parent / path
+        if getattr(sys, "frozen", False):
+            root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FaceRecognition"
+        else:
+            root = self.mp.base.parent
+        return root / path
 
     def _on_recognition(self, enabled: bool) -> None:
         self.prefs.set_bool("face_recognition_enabled", enabled)
