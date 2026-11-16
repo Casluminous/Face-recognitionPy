@@ -15,9 +15,22 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-                               QHeaderView, QLabel, QMainWindow, QPushButton, QStatusBar,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..config import AppConfig
 from ..detectors.ssd_haar import HaarFaceDetector, SsdFaceDetector
@@ -27,10 +40,16 @@ from ..path_validator import sanitize_filename
 from ..processing.frames import FaceRow, FrameProcessor
 from ..processing.vision_fps import FpsCalculator
 from ..services.camera import CameraManager
+from ..services.embedding import FaceEmbeddingService
+from ..services.enrollment import EnrollmentService
 from ..services.face_service import FaceDetectorService
+from ..services.person_repository import PersonRepository
 from ..services.pipeline import DetectionPipeline
 from ..services.prefs import PreferencesService
+from ..services.recognition import RecognitionService
 from ..services.update_security import UpdateService
+from .enroll_dialog import EnrollDialog
+from .people_dialog import PeopleDialog
 
 log = logging.getLogger(__name__)
 
@@ -54,8 +73,9 @@ QStatusBar { background: #FFFFFF; border-top: 1px solid #E2E8F0; color: #475569;
 QStatusBar::item { border: none; }
 """
 
-CATALOG_COLUMNS = ("ID", "Gender", "Confidence", "Engine", "Position")
-CSV_HEADER = ("timestamp", "track_id", "gender", "confidence", "engine", "x", "y", "w", "h")
+CATALOG_COLUMNS = ("ID", "Person", "Gender", "Confidence", "Engine", "Position")
+CSV_HEADER = ("timestamp", "track_id", "person", "gender", "confidence", "engine",
+              "x", "y", "w", "h")
 
 
 def write_faces_csv(path: str | Path, rows: list[FaceRow], engine: str, timestamp: str) -> int:
@@ -64,8 +84,9 @@ def write_faces_csv(path: str | Path, rows: list[FaceRow], engine: str, timestam
         w = csv.writer(f)
         w.writerow(CSV_HEADER)
         for r in rows:
+            person = f"{r.person_name} ({r.person_code})".strip() if r.person_code else r.person_name
             gender = f"{r.gender_label} {r.gender_pct}".strip()
-            w.writerow([timestamp, r.track_id, gender, f"{r.confidence:.4f}",
+            w.writerow([timestamp, r.track_id, person, gender, f"{r.confidence:.4f}",
                         engine, r.x, r.y, r.w, r.h])
     return len(rows)
 
@@ -154,8 +175,32 @@ class MainWindow(QMainWindow):
             except Exception:
                 self.face_service = None
 
+        # Optional recognition stack: YOLO/SSD detection + SFace embedding + SQLite.
+        self.embedder: FaceEmbeddingService | None = None
+        self.people_repo: PersonRepository | None = None
+        self.recognition: RecognitionService | None = None
+        self.enrollment: EnrollmentService | None = None
+        if self.cfg.recognition_enabled and self.mp.has_sface():
+            try:
+                self.embedder = FaceEmbeddingService(self.mp.sface_path, self.cfg)
+                if self.embedder.available:
+                    db_path = self._runtime_path(self.cfg.recognition_db_path)
+                    people_dir = self._runtime_path(self.cfg.recognition_people_dir)
+                    self.people_repo = PersonRepository(db_path, people_dir)
+                    self.recognition = RecognitionService(self.embedder, self.people_repo, self.cfg)
+                    detector = self.yolo or self.ssd or self.haar
+                    self.enrollment = EnrollmentService(
+                        self.people_repo, self.embedder, detector, self.cfg)
+            except Exception as e:  # noqa: BLE001 - keep app usable when a model/backend is missing
+                log.warning("recognition disabled: %s", e)
+                self.embedder = None
+                self.people_repo = None
+                self.recognition = None
+                self.enrollment = None
+
         self.pipeline = DetectionPipeline(self.yolo, self.ssd, self.haar)
-        self.processor = FrameProcessor(self.pipeline, self.face_service, self.cfg)
+        self.processor = FrameProcessor(self.pipeline, self.face_service, self.cfg,
+                                        recognition=self.recognition)
         self.camera = CameraManager(self.cfg)
         self.fps = FpsCalculator(self.cfg.fps_smoothing)
         self.updater = UpdateService(self.cfg)
@@ -196,11 +241,15 @@ class MainWindow(QMainWindow):
         self.btn_snapshot.setEnabled(False)
         self.btn_export = QPushButton("Export CSV")
         self.camera_selector = QComboBox()
+        self.btn_enroll = QPushButton("Enroll Person")
+        self.btn_people = QPushButton("People")
         top.addWidget(self.btn_image)
         top.addWidget(self.btn_camera)
         top.addWidget(self.btn_snapshot)
         top.addWidget(self.btn_export)
         top.addWidget(self.camera_selector)
+        top.addWidget(self.btn_enroll)
+        top.addWidget(self.btn_people)
         top.addStretch(1)
         layout.addLayout(top)
 
@@ -219,10 +268,16 @@ class MainWindow(QMainWindow):
         self.chk_adaptive = QCheckBox("Adaptive exposure")
         self.chk_bright = QCheckBox("Bright-light mode")
         self.chk_gender = QCheckBox("Gender recognition")
+        self.chk_recognition = QCheckBox("Face recognition")
         self.chk_adaptive.setChecked(self.prefs.get_bool("adaptive_exposure_enabled", True))
         self.chk_bright.setChecked(self.prefs.get_bool("bright_light_mode_enabled", True))
         self.chk_gender.setChecked(self.prefs.get_bool("gender_recognition_enabled", False))
-        for c in (self.chk_adaptive, self.chk_bright, self.chk_gender):
+        self.chk_recognition.setChecked(
+            self.recognition is not None and self.prefs.get_bool("face_recognition_enabled", True))
+        self.chk_recognition.setEnabled(self.recognition is not None)
+        self.btn_enroll.setEnabled(self.enrollment is not None and self.enrollment.available)
+        self.btn_people.setEnabled(self.people_repo is not None)
+        for c in (self.chk_adaptive, self.chk_bright, self.chk_gender, self.chk_recognition):
             opts.addWidget(c)
         opts.addStretch(1)
         layout.addLayout(opts)
@@ -242,9 +297,12 @@ class MainWindow(QMainWindow):
         self.btn_camera.clicked.connect(self.toggle_camera)
         self.btn_snapshot.clicked.connect(self.take_snapshot)
         self.btn_export.clicked.connect(self.export_catalog)
+        self.btn_enroll.clicked.connect(self.open_enroll)
+        self.btn_people.clicked.connect(self.open_people)
         self.chk_adaptive.toggled.connect(self._on_adaptive)
         self.chk_bright.toggled.connect(self._on_bright)
         self.chk_gender.toggled.connect(lambda v: self.prefs.set_bool("gender_recognition_enabled", v))
+        self.chk_recognition.toggled.connect(self._on_recognition)
         self.refresh_cameras()
         self.pipeline.set_bright_light_mode(self.chk_bright.isChecked())
         self.camera.set_adaptive(self.chk_adaptive.isChecked())
@@ -278,16 +336,48 @@ class MainWindow(QMainWindow):
         data = self.camera_selector.currentData()
         return int(data) if data is not None else 0
 
+    def _runtime_path(self, value: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return self.mp.base.parent / path
+
+    def _on_recognition(self, enabled: bool) -> None:
+        self.prefs.set_bool("face_recognition_enabled", enabled)
+        if not enabled and self.recognition is not None:
+            self.recognition.invalidate()
+
+    def open_enroll(self) -> None:
+        if self.enrollment is None:
+            self.status_bar.showMessage("Face recognition is unavailable (missing SFace model)")
+            return
+        dialog = EnrollDialog(self.enrollment, self)
+        if dialog.exec():
+            if self.recognition is not None:
+                self.recognition.invalidate()
+            self.status_bar.showMessage("Đã lưu người mới")
+
+    def open_people(self) -> None:
+        if self.enrollment is None:
+            self.status_bar.showMessage("Face recognition is unavailable")
+            return
+        dialog = PeopleDialog(self.enrollment, self)
+        dialog.exec()
+        if self.recognition is not None and dialog.changed:
+            self.recognition.invalidate()
+
     def _refresh_catalog(self, rows: list[FaceRow], engine: str) -> None:
-        key = tuple((r.track_id, r.gender_label, r.gender_pct,
+        key = tuple((r.track_id, r.person_name, r.person_code, r.gender_label, r.gender_pct,
                      round(r.confidence, 3), r.x, r.y, r.w, r.h) for r in rows) + (engine,)
         if key == self._catalog_key:
             return
         self._catalog_key = key
         self.catalog.setRowCount(len(rows))
         for i, r in enumerate(rows):
+            person = f"{r.person_name} ({r.person_code})".strip() if r.person_code else r.person_name
+            person = person or "--"
             gender = f"{r.gender_label} {r.gender_pct}".strip() or "--"
-            vals = (str(r.track_id), gender, f"{r.confidence:.0%}", engine, r.position)
+            vals = (str(r.track_id), person, gender, f"{r.confidence:.0%}", engine, r.position)
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignCenter)
@@ -357,7 +447,8 @@ class MainWindow(QMainWindow):
             return
         self.processor.reset()
         res = self.processor.process(img, 1, self.chk_bright.isChecked(),
-                                     self.chk_gender.isChecked(), static=True)
+                                     self.chk_gender.isChecked(), static=True,
+                                     recognition_on=self.chk_recognition.isChecked())
         self._show_result(res.display, res.processed, res.status, res.engine_label,
                           res.faces, "Static", "Exposure: N/A")
 
@@ -396,7 +487,8 @@ class MainWindow(QMainWindow):
             self.frame_counter += 1
             fps = self.fps.update()
             res = self.processor.process(frame, self.frame_counter,
-                                         self.chk_bright.isChecked(), self.chk_gender.isChecked())
+                                         self.chk_bright.isChecked(), self.chk_gender.isChecked(),
+                                         recognition_on=self.chk_recognition.isChecked())
             self._show_result(res.display, res.processed, res.status, res.engine_label,
                               res.faces, f"{fps:.1f}", self.camera.status)
         except Exception as e:
@@ -430,6 +522,8 @@ class MainWindow(QMainWindow):
                 self._probe.wait(3000)
             self.camera.close()
             self.pipeline.close()
+            if self.embedder is not None:
+                self.embedder.close()
         finally:
             super().closeEvent(event)
 

@@ -11,6 +11,7 @@ from ..processing.vision_fps import is_likely_overexposed, prepare_for_face_dete
 from ..services.face_service import FaceDetectorService
 from ..services.gender import GenderCacheManager
 from ..services.pipeline import DetectionPipeline
+from ..services.recognition import RecognitionService
 
 
 @dataclass
@@ -24,6 +25,9 @@ class FaceRow:
     gender_label: str = ""
     gender_pct: str = ""
     confidence: float = 0.0
+    person_name: str = ""
+    person_code: str = ""
+    person_score: float = 0.0
 
     @property
     def position(self) -> str:
@@ -42,18 +46,23 @@ class FrameResult:
 
 class FrameProcessor:
     def __init__(self, pipeline: DetectionPipeline, face_service: FaceDetectorService | None = None,
-                 cfg: AppConfig | None = None):
+                 cfg: AppConfig | None = None, recognition: RecognitionService | None = None):
         self.cfg = cfg or AppConfig.get_instance()
         self.pipeline = pipeline
         self.face_service = face_service
+        self.recognition = recognition
         self.cache = GenderCacheManager(self.cfg.gender_vote_window, self.cfg.gender_min_votes)
         self._warmup_interval = max(1, self.cfg.gender_warmup_interval)
         self._min_confirm = max(1, self.cfg.gender_min_track_confirm)
         self._last_gender: dict[int, int] = {}
+        self._last_recognition: dict[int, int] = {}
 
     def reset(self) -> None:
         self.cache.clear()
         self._last_gender.clear()
+        self._last_recognition.clear()
+        if self.recognition is not None:
+            self.recognition.invalidate()
         self.pipeline.reset()
 
     def close(self) -> None:
@@ -83,13 +92,23 @@ class FrameProcessor:
         last = self._last_gender.get(tid, -(1 << 62))
         return (cur - last) >= interval
 
+    def _should_recognize(self, tid: int, cur: int) -> bool:
+        decision = self.recognition.cache.get(tid) if self.recognition is not None else None
+        interval = (self.cfg.recognition_update_interval
+                    if decision is not None and decision.state != "pending"
+                    else max(1, min(5, self.cfg.recognition_update_interval)))
+        last = self._last_recognition.get(tid, -(1 << 62))
+        return (cur - last) >= interval
+
     def process(self, frame: np.ndarray, cur: int, bright_mode: bool, gender_on: bool,
-                static: bool = False) -> FrameResult:
+                static: bool = False, recognition_on: bool = True) -> FrameResult:
         """Process one frame.
 
         ``static`` is for single-shot images: a still has only one detection,
         so confirmation/vote history would hide it forever. There the first
         detection is trusted and gender is shown from a single prediction.
+        ``recognition_on`` only disables identity matching; detection, tracking
+        and gender continue to work.
         """
         display = self._prepare_display(frame)
         bright_scene = bool(is_likely_overexposed(display, self.cfg))
@@ -131,10 +150,48 @@ class FrameProcessor:
                 if text:
                     cv2.putText(out, text, (x, max(0, y - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-            rows.append(FaceRow(face.track_id, x, y, w, h, label, pct, face.confidence))
+
+            person_name, person_code, person_score = "", "", 0.0
+            if recognition_on and self.recognition is not None:
+                if static:
+                    match = self.recognition.recognize(display, (x, y, w, h), face.landmarks)
+                    if match is not None:
+                        person_name = match.name
+                        person_code = match.code or ""
+                        person_score = match.score
+                    else:
+                        person_name = "Unknown"
+                else:
+                    if self._should_recognize(face.track_id, cur):
+                        self.recognition.observe(face.track_id, display, (x, y, w, h),
+                                                 face.landmarks)
+                        self._last_recognition[face.track_id] = cur
+                    decision = self.recognition.cache.get(face.track_id)
+                    if decision is not None and decision.state == "known" and decision.match:
+                        person_name = decision.match.name
+                        person_code = decision.match.code or ""
+                        person_score = decision.match.score
+                    elif decision is not None and decision.state == "unknown":
+                        person_name = "Unknown"
+                if person_name:
+                    py = y - 30 if y >= 30 else y + h + 22
+                    text = person_name if not person_code else f"{person_name} ({person_code})"
+                    cv2.putText(out, text, (x, max(0, py)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+
+            row = FaceRow(face.track_id, x, y, w, h, label, pct, face.confidence)
+            row.person_name = person_name
+            row.person_code = person_code
+            row.person_score = person_score
+            rows.append(row)
         self.cache.retain_all(active)
+        if self.recognition is not None:
+            self.recognition.retain_tracks(active)
         for tid in list(self._last_gender.keys()):
             if tid not in active:
                 del self._last_gender[tid]
+        for tid in list(self._last_recognition.keys()):
+            if tid not in active:
+                del self._last_recognition[tid]
         status = f"{len(rows)} face(s) detected"
         return FrameResult(display, out, status, det.engine_label, bright_scene, rows)

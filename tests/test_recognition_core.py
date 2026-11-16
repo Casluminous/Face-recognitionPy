@@ -165,6 +165,38 @@ def test_recognition_config_defaults():
     assert cfg.recognition_enrollment_min_images == 3
 
 
+class _FacePipeline:
+    def __init__(self, face):
+        self.face = face
+
+    def process(self, *args, **kwargs):
+        from face_recognition.models import DetectionResult
+        return DetectionResult([self.face], "TEST", False, 1.0)
+
+    def reset(self):
+        pass
+
+
+def test_frame_processor_static_recognition_label(tmp_path):
+    from face_recognition.models import TrackedFace
+    from face_recognition.processing.frames import FrameProcessor
+    repo = PersonRepository(tmp_path / "people.sqlite3", tmp_path / "people")
+    repo.create_person("An", "A01", embeddings=[
+        EmbeddingInput(_unit(0), "stub", "square"),
+    ])
+    cfg = AppConfig.reset_for_tests({
+        "recognition.match.threshold": "0.50",
+        "recognition.match.margin": "0.05",
+        "recognition.min.track.confirm": "1",
+    })
+    service = RecognitionService(_StubEmbedder(_unit(0)), repo, cfg)
+    face = TrackedFace(1, 10, 10, 100, 100, confidence=0.9, confirm=1)
+    proc = FrameProcessor(_FacePipeline(face), None, cfg, recognition=service)
+    res = proc.process(np.zeros((200, 200, 3), np.uint8), 1, False, False, static=True)
+    assert res.faces[0].person_name == "An"
+    assert res.faces[0].person_code == "A01"
+
+
 def _person_embedding(person_id: int, name: str, vector: np.ndarray):
     from face_recognition.services.person_repository import PersonEmbedding
     return PersonEmbedding(person_id, name, None, "", vector, "test")

@@ -146,17 +146,27 @@ class PersonRepository:
             raise
 
     def add_embedding(self, person_id: int, embedding: EmbeddingInput) -> int:
+        return self.add_embeddings(person_id, [embedding])[0]
+
+    def add_embeddings(self, person_id: int, embeddings: list[EmbeddingInput]) -> list[int]:
+        if not embeddings:
+            return []
+        prepared = [(self._blob(e.vector), e.model, e.alignment, e.image_path,
+                     float(e.quality)) for e in embeddings]
         with self._connect() as con:
             if con.execute("SELECT 1 FROM persons WHERE id = ?", (person_id,)).fetchone() is None:
                 raise KeyError(f"person not found: {person_id}")
-            cur = con.execute(
-                "INSERT INTO face_embeddings(person_id, vector, model, alignment, "
-                "image_path, quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (person_id, self._blob(embedding.vector), embedding.model,
-                 embedding.alignment, embedding.image_path, float(embedding.quality), _now()),
-            )
+            ids: list[int] = []
+            now = _now()
+            for vector, model, alignment, image_path, quality in prepared:
+                cur = con.execute(
+                    "INSERT INTO face_embeddings(person_id, vector, model, alignment, "
+                    "image_path, quality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (person_id, vector, model, alignment, image_path, quality, now),
+                )
+                ids.append(int(cur.lastrowid))
             con.commit()
-            return int(cur.lastrowid)
+            return ids
 
     def update_person(self, person_id: int, name: str, code: str | None, note: str) -> bool:
         clean_name = name.strip()
