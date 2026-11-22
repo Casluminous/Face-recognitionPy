@@ -81,8 +81,8 @@ def test_identity_vote_cache():
 def test_repository_crud_and_cascade(tmp_path):
     repo = PersonRepository(tmp_path / "people.sqlite3", tmp_path / "people")
     p1 = repo.create_person("An", "A01", "lớp 1", [
-        EmbeddingInput(_unit(0), "sface_2021dec", "landmarks", quality=5.0),
-        EmbeddingInput(_unit(1), "sface_2021dec", "square", quality=6.0),
+        EmbeddingInput(_unit(0), "sface_2021dec", "landmarks", "1.jpg", quality=5.0),
+        EmbeddingInput(_unit(1), "sface_2021dec", "square", "2.jpg", quality=6.0),
     ])
     p2 = repo.create_person("Bình", None, "")
     assert p1 > 0 and p2 > 0
@@ -162,7 +162,7 @@ def test_recognition_config_defaults():
     assert cfg.recognition_match_threshold == 0.36
     assert cfg.recognition_match_margin == 0.05
     assert cfg.recognition_min_face_px == 80
-    assert cfg.recognition_enrollment_min_images == 3
+    assert cfg.recognition_enrollment_min_images == 1
 
 
 class _FacePipeline:

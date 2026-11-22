@@ -59,6 +59,13 @@ class EnrollmentService:
             raise ValueError(f"Cần ít nhất {self.cfg.recognition_enrollment_min_images} ảnh hợp lệ")
         if len(items) > self.cfg.recognition_enrollment_max_images:
             raise ValueError(f"Chỉ được tối đa {self.cfg.recognition_enrollment_max_images} ảnh")
+        if len(items) == 1:
+            item = items[0]
+            aug = getattr(self.embedder, "embed_augmented", None)
+            if aug is not None:
+                result = aug(item.image, item.face.bbox, item.face.landmarks)
+                if result is not None:
+                    item.embedding = result
         person_id = self.repository.create_person(name, code, note)
         created: list[Path] = []
         try:

@@ -55,7 +55,7 @@ https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face
 data/models/recognition/face_recognition_sface_2021dec.onnx
 ```
 
-2. Mở app, bấm `Enroll Person`, chọn 3-5 ảnh, nhập Tên/Mã/Ghi chú và lưu.
+2. Mở app, bấm `Enroll Person`, chọn 1-5 ảnh, nhập Tên/Mã/Ghi chú và lưu. Với 1 ảnh, app tự tạo embedding tăng cường (flip/gamma/rotate nhẹ); nên thêm ảnh sau để ổn định hơn.
 3. Bật `Face recognition` để nhận diện trên ảnh tĩnh và webcam.
 4. Dữ liệu lưu cục bộ:
 

@@ -62,6 +62,47 @@ class FaceEmbeddingService:
     def embed(self, image: np.ndarray, rect: tuple[int, int, int, int],
               landmarks: list[tuple[float, float]] | None = None) -> EmbeddingResult | None:
         """Return a normalized embedding, or None when the crop is unusable."""
+        prepared = self._prepare_face(image, rect, landmarks)
+        if prepared is None:
+            return None
+        face, alignment = prepared
+        vector = self._feature(face)
+        if vector is None:
+            return None
+        return EmbeddingResult(vector=vector, alignment=alignment, quality=self._quality(face))
+
+    def embed_augmented(self, image: np.ndarray, rect: tuple[int, int, int, int],
+                        landmarks: list[tuple[float, float]] | None = None) -> EmbeddingResult | None:
+        """Average embeddings from small one-image augmentations.
+
+        Used for 1-image enrollment. Augmenting the aligned 112x112 crop avoids
+        having to recompute face boxes/landmarks for flips and rotations.
+        """
+        prepared = self._prepare_face(image, rect, landmarks)
+        if prepared is None:
+            return None
+        face, alignment = prepared
+        variants = [
+            face,
+            cv2.flip(face, 1),
+            self._gamma(face, 0.85),
+            self._gamma(face, 1.15),
+            self._rotate(face, 8),
+            self._rotate(face, -8),
+        ]
+        vectors = [v for v in (self._feature(item) for item in variants) if v is not None]
+        if not vectors:
+            return None
+        mean = np.mean(np.stack(vectors, axis=0), axis=0)
+        norm = float(np.linalg.norm(mean))
+        if norm <= 1e-12:
+            return None
+        return EmbeddingResult(vector=mean / norm, alignment=f"{alignment}+aug",
+                               quality=self._quality(face))
+
+    def _prepare_face(self, image: np.ndarray, rect: tuple[int, int, int, int],
+                      landmarks: list[tuple[float, float]] | None = None
+                      ) -> tuple[np.ndarray, str] | None:
         if not self.available or image is None or image.size == 0:
             return None
         x, y, w, h = (int(v) for v in rect)
@@ -83,14 +124,15 @@ class FaceEmbeddingService:
                 return None
             interp = cv2.INTER_AREA if face.shape[0] > EMBEDDING_SIZE else cv2.INTER_LINEAR
             face = cv2.resize(face, (EMBEDDING_SIZE, EMBEDDING_SIZE), interpolation=interp)
-
         if face is None or face.size == 0:
             return None
         if not crop_quality_ok(face, EMBEDDING_SIZE, self._min_sharpness,
                                self._min_brightness, self._max_brightness):
             log.debug("recognition crop rejected (blur/brightness)")
             return None
+        return face, alignment
 
+    def _feature(self, face: np.ndarray) -> np.ndarray | None:
         try:
             with self._lock:
                 feat = self._recognizer.feature(face)
@@ -104,10 +146,25 @@ class FaceEmbeddingService:
         norm = float(np.linalg.norm(vector))
         if norm <= 1e-12:
             return None
-        vector = vector / norm
+        return vector / norm
+
+    @staticmethod
+    def _quality(face: np.ndarray) -> float:
         gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-        quality = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        return EmbeddingResult(vector=vector, alignment=alignment, quality=quality)
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    @staticmethod
+    def _gamma(face: np.ndarray, gamma: float) -> np.ndarray:
+        inv = 1.0 / max(1e-6, gamma)
+        table = np.array([((i / 255.0) ** inv) * 255 for i in range(256)], dtype=np.uint8)
+        return cv2.LUT(face, table)
+
+    @staticmethod
+    def _rotate(face: np.ndarray, angle: float) -> np.ndarray:
+        center = (face.shape[1] / 2.0, face.shape[0] / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        return cv2.warpAffine(face, matrix, (face.shape[1], face.shape[0]),
+                              flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
     def _aligned_face(self, image: np.ndarray, rect: tuple[int, int, int, int],
                       landmarks: list[tuple[float, float]]) -> np.ndarray | None:

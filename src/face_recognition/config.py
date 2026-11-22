@@ -60,7 +60,7 @@ _DEFAULTS: dict[str, str] = {
     "recognition.min.sharpness": "3.0",
     "recognition.min.brightness": "40.0",
     "recognition.max.brightness": "225.0",
-    "recognition.enrollment.min.images": "3",
+    "recognition.enrollment.min.images": "1",
     "recognition.enrollment.max.images": "5",
     "recognition.db.path": "data/recognition/people.sqlite3",
     "recognition.people.dir": "data/recognition/people",
@@ -301,7 +301,7 @@ class AppConfig:
         return self.get_float("recognition.max.brightness", 225.0)
     @property
     def recognition_enrollment_min_images(self) -> int:
-        return self.get_int("recognition.enrollment.min.images", 3)
+        return self.get_int("recognition.enrollment.min.images", 1)
     @property
     def recognition_enrollment_max_images(self) -> int:
         return self.get_int("recognition.enrollment.max.images", 5)

@@ -67,7 +67,7 @@ class EnrollDialog(QDialog):
         self.form.addRow("Ghi chú:", self.note_edit)
         root.addLayout(self.form)
 
-        hint = QLabel("Chọn 3-5 ảnh rõ mặt, mỗi ảnh chỉ nên có một khuôn mặt chính.")
+        hint = QLabel("Chọn 1-5 ảnh rõ mặt; 1 ảnh vẫn được nhưng nên thêm ảnh để ổn định hơn.")
         hint.setStyleSheet("color: #475569;")
         root.addWidget(hint)
 

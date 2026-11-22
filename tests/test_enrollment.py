@@ -33,6 +33,11 @@ class _Embedder:
         vec[0] = 1.0
         return EmbeddingResult(vec, "square", 5.0)
 
+    def embed_augmented(self, image, rect, landmarks=None):
+        vec = np.zeros(128, dtype=np.float32)
+        vec[0] = 1.0
+        return EmbeddingResult(vec, "square+aug", 5.0)
+
 
 def _item():
     return EnrollmentItem(
@@ -79,3 +84,15 @@ def test_enrollment_rejects_too_few_images(tmp_path):
         pass
     else:
         raise AssertionError("accepted fewer than minimum images")
+
+
+def test_one_image_enrollment_uses_augmentation(tmp_path):
+    repo = PersonRepository(tmp_path / "people.sqlite3", tmp_path / "people")
+    cfg = AppConfig.reset_for_tests({"recognition.enrollment.min.images": "1"})
+    svc = EnrollmentService(repo, _Embedder(), _Detector(), cfg)
+    pid = svc.save("An", None, "", [_item()])
+    person = repo.get_person(pid)
+    assert person is not None and person.image_count == 1
+    embs = repo.get_embeddings(pid)
+    assert len(embs) == 1
+    assert embs[0].alignment == "square+aug"

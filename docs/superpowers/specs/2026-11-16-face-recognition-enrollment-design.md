@@ -18,7 +18,8 @@
 
 ## 2. Mục tiêu
 
-- Cho phép người dùng chọn 3–5 ảnh của một người, nhập Tên, Mã, Ghi chú và lưu hồ sơ.
+- Cho phép người dùng chọn 1–5 ảnh của một người (khuyến nghị 3–5), nhập Tên, Mã, Ghi chú và lưu hồ sơ.
+- Với 1 ảnh, tạo embedding tăng cường từ flip/gamma/rotate nhẹ để giảm rủi ro thiếu góc mặt.
 - Tự động tạo embedding cho từng khuôn mặt đã chọn.
 - Nhận diện 1:N trên ảnh tĩnh và webcam: hiển thị đúng tên nếu đã đăng ký, ngược lại hiển thị `Unknown`.
 - Dữ liệu lưu cục bộ, không gửi ảnh/embedding ra ngoài.
@@ -38,7 +39,7 @@
 | Hạng mục | Quyết định |
 |---|---|
 | Kiểu nhận diện | 1:N, nhiều người |
-| Số ảnh mỗi người | 3–5 ảnh |
+| Số ảnh mỗi người | 1–5 ảnh (khuyến nghị 3–5; 1 ảnh dùng augmentation) |
 | Nguồn nhận diện | Ảnh tĩnh + webcam |
 | Thông tin người | Tên bắt buộc; Mã và Ghi chú tùy chọn |
 | Khi không đủ giống | Hiển thị `Unknown`, không đoán người gần nhất |
@@ -51,7 +52,7 @@
 
 ```text
 [EnrollDialog]
-   chọn 3-5 ảnh, nhập Tên/Mã/Ghi chú
+   chọn 1-5 ảnh, nhập Tên/Mã/Ghi chú
         │
         ▼
 [EnrollmentService]
@@ -123,6 +124,17 @@
 - Ảnh đọc được, không hỏng.
 
 Ảnh không đạt bị đánh dấu lỗi trong dialog; người dùng có thể bỏ hoặc thay ảnh.
+
+### Chế độ 1 ảnh
+
+Khi người dùng chỉ chọn 1 ảnh:
+
+- Lấy crop mặt 112×112 chuẩn.
+- Tạo 6 biến thể: gốc, lật ngang, gamma 0.85, gamma 1.15, xoay +8°, xoay -8°.
+- Tính embedding từng biến thể, lấy trung bình, chuẩn hóa L2 và lưu **một vector** với `alignment="<gốc>+aug"`.
+- Số ảnh trong DB vẫn là 1 (đếm distinct `image_path`), không phải 6.
+- Khuyến nghị thêm ảnh sau nếu nhận diện chưa ổn định.
+- Threshold/margin nên chặt hơn khi chỉ có 1 ảnh; giá trị sẽ tinh chỉnh bằng dataset thật.
 
 ## 7. Database
 
@@ -197,14 +209,15 @@ CREATE INDEX idx_embeddings_person ON face_embeddings(person_id);
 
 ### Enroll dialog
 
-- Chọn 3–5 ảnh.
+- Chọn 1–5 ảnh.
 - Mỗi ảnh có thumbnail và trạng thái: hợp lệ / không có mặt / nhiều mặt / ảnh mờ.
 - Nếu ảnh có nhiều mặt: hiện danh sách crop để chọn đúng người.
 - Nhập:
   - Tên (bắt buộc).
   - Mã (tùy chọn, unique không phân biệt hoa thường).
   - Ghi chú (tùy chọn).
-- Nút Lưu chỉ bật khi có ít nhất 3 ảnh hợp lệ và Tên không rỗng.
+- Nút Lưu chỉ bật khi có ít nhất 1 ảnh hợp lệ và Tên không rỗng.
+- Với 1 ảnh, hiển thị ghi chú "đang dùng augmentation; nên thêm ảnh để ổn định hơn".
 - Khi lưu: hiện tiến trình, khóa nút, báo lỗi nếu trùng mã/model lỗi/DB lỗi.
 
 ### People dialog
@@ -232,7 +245,7 @@ recognition.min.face.px=80
 recognition.min.sharpness=3.0
 recognition.min.brightness=40.0
 recognition.max.brightness=225.0
-recognition.enrollment.min.images=3
+recognition.enrollment.min.images=1
 recognition.enrollment.max.images=5
 recognition.db.path=data/recognition/people.sqlite3
 recognition.people.dir=data/recognition/people
@@ -280,6 +293,7 @@ recognition.people.dir=data/recognition/people
 ### Integration/UI test
 
 - Enroll 2 người × 3 ảnh.
+- Enroll 1 người chỉ với 1 ảnh; kiểm tra augmentation tạo vector và vẫn nhận đúng ảnh test cùng người.
 - Nhận đúng trên 2 ảnh test/người.
 - 3 ảnh người lạ → `Unknown`.
 - Camera 10 giây: tên không nhấp nháy, không đổi liên tục.
@@ -326,7 +340,8 @@ recognition.people.dir=data/recognition/people
 Khi vào Phase 3/nghiệm thu, cần:
 
 - 2–3 người.
-- Mỗi người 3–5 ảnh enroll: chính diện, hơi trái/phải, ánh sáng khác nhau.
+- Mỗi người 1–5 ảnh enroll (khuyến nghị 3–5): chính diện, hơi trái/phải, ánh sáng khác nhau.
+- Với người chỉ có 1 ảnh, test thêm ảnh cùng người ở góc/ánh sáng khác để đo độ ổn định.
 - Mỗi người 2–3 ảnh test không trùng ảnh enroll.
 - 3–5 ảnh người lạ để test `Unknown`.
 - Ảnh rõ mặt, không che khuất mạnh; có sự đồng ý của người trong ảnh.
@@ -337,7 +352,7 @@ Nếu chưa có, có thể dùng ảnh công khai/ảnh mẫu cho test kỹ thu�
 
 | Rủi ro | Giảm thiểu |
 |---|---|
-| SFace kém chính xác với góc mặt lạ | Yêu cầu 3–5 ảnh đa góc; threshold + margin; fallback Unknown |
+| SFace kém chính xác với góc mặt lạ | Khuyến nghị 3–5 ảnh; 1 ảnh dùng augmentation; threshold + margin; fallback Unknown |
 | YOLO không có landmark (model hiện tại) | Fallback crop vuông; có thể bổ sung YuNet/keypoint model sau |
 | Nhận nhầm người lạ | Margin top1-top2, vote, threshold; test người lạ |
 | UI treo khi embedding | Chỉ chạy mỗi 15 frame; measure; worker nếu >30 ms |

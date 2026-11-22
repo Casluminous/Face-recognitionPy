@@ -189,8 +189,9 @@ class PersonRepository:
     def get_person(self, person_id: int) -> PersonRecord | None:
         with self._connect() as con:
             row = con.execute(
-                "SELECT p.*, (SELECT COUNT(*) FROM face_embeddings e WHERE e.person_id = p.id) "
-                "AS image_count FROM persons p WHERE p.id = ?",
+                "SELECT p.*, (SELECT COUNT(DISTINCT e.image_path) FROM face_embeddings e "
+                "WHERE e.person_id = p.id AND e.image_path != '') AS image_count "
+                "FROM persons p WHERE p.id = ?",
                 (person_id,),
             ).fetchone()
             return self._person_row(row) if row is not None else None
@@ -198,8 +199,9 @@ class PersonRepository:
     def list_people(self) -> list[PersonRecord]:
         with self._connect() as con:
             rows = con.execute(
-                "SELECT p.*, (SELECT COUNT(*) FROM face_embeddings e WHERE e.person_id = p.id) "
-                "AS image_count FROM persons p ORDER BY p.name COLLATE NOCASE, p.id"
+                "SELECT p.*, (SELECT COUNT(DISTINCT e.image_path) FROM face_embeddings e "
+                "WHERE e.person_id = p.id AND e.image_path != '') AS image_count "
+                "FROM persons p ORDER BY p.name COLLATE NOCASE, p.id"
             ).fetchall()
             return [self._person_row(r) for r in rows]
 
