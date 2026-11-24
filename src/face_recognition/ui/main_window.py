@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from ..config import AppConfig
 from ..detectors.ssd_haar import HaarFaceDetector, SsdFaceDetector
 from ..detectors.yolo import YoloFaceDetector
+from ..image_io import imread, imwrite
 from ..model_paths import ModelPaths
 from ..path_validator import sanitize_filename
 from ..processing.frames import FaceRow, FrameProcessor
@@ -413,7 +414,7 @@ class MainWindow(QMainWindow):
                                               "JPEG (*.jpg);;PNG (*.png)")
         if not path:
             return
-        if cv2.imwrite(path, self._last_processed):
+        if imwrite(path, self._last_processed):
             self.prefs.set_string("last_snapshot_dir", str(Path(path).parent))
             self.status_bar.showMessage(f"Snapshot saved: {path}")
         else:
@@ -446,7 +447,7 @@ class MainWindow(QMainWindow):
         if self.camera_on:
             self.toggle_camera()
         self._frame_errors = 0
-        img = cv2.imread(path)
+        img = imread(path)
         if img is None:
             self.status_bar.showMessage("Failed to read image")
             return

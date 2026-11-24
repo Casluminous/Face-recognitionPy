@@ -4,9 +4,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import cv2
-
 from .config import AppConfig
+from .image_io import imread, imwrite
 from .model_paths import ModelPaths
 from .path_validator import is_valid_image_path
 from .services.face_service import FaceDetectorService
@@ -32,12 +31,12 @@ def run_cli(input_path: str, output_path: str) -> int:
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     svc = build_service()
-    img = cv2.imread(str(inp))
+    img = imread(inp)
     if img is None:
         print("Failed to read image")
         return 1
     n = svc.detect_and_draw(img)
-    cv2.imwrite(str(out), img)
+    imwrite(out, img)
     print(f"Done: {n} face(s) -> {out}")
     return 0
 

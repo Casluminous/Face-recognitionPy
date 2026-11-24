@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..image_io import imread
 from ..services.enrollment import EnrollmentItem, EnrollmentService
 from ..services.person_repository import DuplicatePersonCodeError
 
@@ -148,7 +149,7 @@ class EnrollDialog(QDialog):
                 if len(self.items) >= self._limit():
                     break
                 path = Path(raw)
-                image = cv2.imread(str(path))
+                image = imread(path)
                 if image is None:
                     skipped.append(f"{path.name}: không đọc được")
                     continue

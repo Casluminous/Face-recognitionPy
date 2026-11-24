@@ -11,6 +11,7 @@ import numpy as np
 
 from ..config import AppConfig
 from ..detectors.base import FaceDetector
+from ..image_io import imread
 from ..models import FaceDetection
 from .embedding import EmbeddingResult, FaceEmbeddingService
 from .person_repository import EmbeddingInput, PersonRecord, PersonRepository
@@ -131,7 +132,7 @@ class EnrollmentService:
         path = Path(image_path)
         if not path.is_absolute():
             path = self.repository.people_dir / path
-        return cv2.imread(str(path))
+        return imread(path)
 
     def _write_image(self, person_id: int, image: np.ndarray) -> tuple[str, Path]:
         person_dir = self.repository.people_dir / str(person_id)
